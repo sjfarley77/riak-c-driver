@@ -17,10 +17,12 @@ install: libriakdrv.so
 	install -d $(INCDIR)
 	install libriakdrv.so $(LIBDIR)
 	install riakdrv.h $(INCDIR)
+	install riakerrors.h $(INCDIR)
 
 uninstall:
 	rm $(LIBDIR)libriakdrv.so
 	rm $(INCDIR)riakdrv.h
+	rm $(INCDIR)riakerrors.h
 
 libriakdrv.so: $(OBJECTS)
 	$(CC) -fPIC -shared $(LDFLAGS) $(LDLIBS) $^ -o $@
