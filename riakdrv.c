@@ -384,7 +384,7 @@ void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_objec
 	if((key == NULL)||(elem == NULL))
 		return;
 	
-	sprintf(address, "http://%s/riak/%s/%s", addr, bucket, key);
+	sprintf(address, "%s/riak/%s/%s", addr, bucket, key);
 	
 	headerlist = curl_slist_append(headerlist, "Content-type: application/json");
 	
@@ -419,7 +419,7 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 	if((mapred_statement == NULL)||(ret_len == NULL))
 		return;
 	
-	sprintf(address, "http://%s/mapred", addr);
+	sprintf(address, "%s/mapred", addr);
 	
 	headerlist = curl_slist_append(headerlist, "Content-type: application/json");
 	
@@ -496,7 +496,7 @@ char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	if(!query)
 		return;
 	
-	sprintf(address, "http://%s/solr/%s", addr, query);
+	sprintf(address, "%s/solr/%s", addr, query);
 	
 	retdata = malloc(sizeof(struct buffered_char));
 	retbuffer = malloc(4096*sizeof(char));
