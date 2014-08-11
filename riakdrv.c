@@ -27,11 +27,14 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <unistd.h>
 
 #include "riakdrv.h"
 
 #include "riakproto/riakmessages.pb-c.h"
 #include "riakproto/riakcodes.h"
+
+
 
 /**
  * \brief Helper structure for exchanging data with cURL.
@@ -41,6 +44,8 @@ struct buffered_char {
 	char * buffer;
 	/** Current position in buffer */
 	int pointer;
+	/** overall capacity of buffer */
+	int capacity;
 };
 
 /** We should initialize cURL only once so this is the flag indicating whether initialization is necessary. */
@@ -58,14 +63,16 @@ int first_time = 1;
  */
 void riak_copy_error(RIAK_CONN * connstruct, RpbErrorResp * errorResp) {
 	char * tmp;
+	size_t error_len;
 
 	if(connstruct->error_msg != NULL)
 		free(connstruct->error_msg);
-	connstruct->error_msg = malloc(errorResp->errmsg.len+1+sizeof(errorResp->errcode)*2+4);
-	tmp = malloc(errorResp->errmsg.len);
+	error_len = (errorResp->errmsg.len + 1 + sizeof(errorResp->errcode)*2 + 4);
+	connstruct->error_msg = malloc(error_len*sizeof(char));
+	tmp = malloc(errorResp->errmsg.len*sizeof(char));
 	memcpy(tmp, errorResp->errmsg.data, errorResp->errmsg.len);
 	tmp[errorResp->errmsg.len] = '\0';
-	sprintf(connstruct->error_msg, "(%X): %s", errorResp->errcode, tmp);
+	snprintf(connstruct->error_msg, error_len, "(%X): %s", errorResp->errcode, tmp);
 	free(tmp);
 }
 
@@ -73,7 +80,7 @@ RIAK_CONN * riak_init(char * hostname, int pb_port, int curl_port, RIAK_CONN * c
 	int sockfd;
 	struct sockaddr_in serv_addr;
 	struct hostent *server;
-
+	int buffer_len;
 	char * buffer;
 
 	if(connstruct == NULL)
@@ -118,10 +125,12 @@ RIAK_CONN * riak_init(char * hostname, int pb_port, int curl_port, RIAK_CONN * c
 			first_time = 0;
 		}
 
-		buffer = malloc(strlen(hostname)+strlen("http://:")+30);
-		sprintf(buffer, "http://%s:%d", hostname, curl_port);
-		connstruct->addr = malloc(strlen(buffer)+1);
-		strcpy(connstruct->addr, buffer);
+		buffer_len = strlen(hostname)+strlen("http://:")+30+1;
+		buffer = malloc(buffer_len*sizeof(char));
+		snprintf(buffer, buffer_len, "http://%s:%d", hostname, curl_port);
+		connstruct->addr = malloc(buffer_len*sizeof(char));
+		strncpy(connstruct->addr, buffer, buffer_len);
+		connstruct->addr[buffer_len - 1] = '\0';
 		free(buffer);
 		if((connstruct->curlh = curl_easy_init()) == NULL) {
 			if(connstruct->socket != 0) {
@@ -282,8 +291,8 @@ char ** riak_list_buckets(RIAK_CONN * connstruct, int * n_buckets) {
  */
 size_t readfunc(void *ptr, size_t size, size_t nmemb, void *userdata) {
 	struct buffered_char * data = (struct buffered_char *)userdata;
-	
 	size_t datalen = (size*nmemb > strlen(data->buffer)-data->pointer) ? strlen(data->buffer)-data->pointer : size*nmemb;
+
 	if(datalen > 0) memcpy(ptr, data->buffer+data->pointer, datalen);
 	data->pointer += datalen;
 	
@@ -305,11 +314,21 @@ size_t readfunc(void *ptr, size_t size, size_t nmemb, void *userdata) {
  */
 size_t writefunc(void *ptr, size_t size, size_t nmemb, void *userdata) {
 	struct buffered_char * data = (struct buffered_char *)userdata;
+	size_t needed = size*nmemb;
+	if ((data->capacity - data->pointer) <  (int)needed) {
+		data->capacity += ((int)(needed) < 4096) ?
+			4096 : (int)needed+1024;
+		data->buffer = realloc(data->buffer, data->capacity);
+		if (NULL == data->buffer) {
+			abort();
+		}
+	}
 	
-	memcpy(data->buffer+data->pointer, ptr, size*nmemb);
-	data->pointer += size*nmemb;
 
-	return size*nmemb;
+	memcpy(data->buffer+data->pointer, ptr, (int)needed);
+	data->pointer += (int)needed;
+
+	return needed;
 }
 
 int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data) {
@@ -374,7 +393,8 @@ int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data) {
 
 void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_object * elem) {
 	int i;
-	char address[1024];
+	size_t address_len;
+	char *address;
 	CURLcode res;
 	struct curl_slist * headerlist = NULL;
 	struct buffered_char data;
@@ -384,12 +404,16 @@ void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_objec
 	if((key == NULL)||(elem == NULL))
 		return;
 	
-	sprintf(address, "%s/riak/%s/%s", addr, bucket, key);
-	
+#define RIAK_BUCKET_URL "%s/riak/%s/%s"
+	address_len = strlen(addr) + strlen(bucket) + strlen(key) + strlen(RIAK_BUCKET_URL)+1;
+	address = malloc(address_len*sizeof(char));
+	snprintf(address, address_len, RIAK_BUCKET_URL, addr, bucket, key);
+
 	headerlist = curl_slist_append(headerlist, "Content-type: application/json");
 	
 	data.buffer = (char*)json_object_get_string(elem);
 	data.pointer = 0;
+	data.capacity = 0;
 	
 	curl_easy_setopt(curl, CURLOPT_URL, address);
 	curl_easy_setopt(curl, CURLOPT_PUT, 1L);
@@ -402,12 +426,16 @@ void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_objec
 	res = curl_easy_perform(curl);
 	
 	curl_slist_free_all(headerlist);
+	free(address);
 }
 
+
+/* NOTE: caller needs to free the data returned from this function as well */
 json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statement, int *ret_len) {
 	int i, j, offset, counter, offset_mem;
-	char buffer[4096], retbuffer[4096];
-	char address[1024];
+	size_t address_len;
+	char * buffer;
+	char * address;
 	char *startp, *endp;
 	CURLcode res;
 	struct curl_slist * headerlist = NULL;
@@ -419,29 +447,35 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 	if((mapred_statement == NULL)||(ret_len == NULL))
 		return;
 	
-	sprintf(address, "%s/mapred", addr);
-	
-	headerlist = curl_slist_append(headerlist, "Content-type: application/json");
-	
-	strcpy(buffer, mapred_statement);
+#define MAPRED_FRAGMENT "/mapred"
+	address_len  = strlen(addr) + strlen(MAPRED_FRAGMENT) + 1;
+	address = malloc((address_len)*sizeof(char));
+	snprintf(address, address_len, "%s"MAPRED_FRAGMENT, addr);
 	
 	retdata = malloc(sizeof(struct buffered_char));
-	retdata->buffer = retbuffer;
+	retdata->capacity = 4096;
 	retdata->pointer = 0;
+	retdata->buffer = malloc(sizeof(char)*retdata->capacity);
+
+	headerlist = curl_slist_append(headerlist, "Content-type: application/json");
 	
 	curl_easy_setopt(curl, CURLOPT_URL, address);
 	curl_easy_setopt(curl, CURLOPT_POST, 1L);
 	curl_easy_setopt(curl, CURLOPT_HEADER, 1L);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist);
-	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buffer);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, mapred_statement);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, retdata);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
 	
 	res = curl_easy_perform(curl);
-	
+	// not entirely sure why we need this, but okay
+	curl_slist_free_all(headerlist);
 	retdata->buffer[retdata->pointer] = '\0';
-	
+
 	i = strlen(retdata->buffer);
+	/* at worst, buffer needs to be large enough to hold all of retdata->buffer */
+	buffer = malloc((i+1)*sizeof(char));
+
 	for(offset = 0; (retdata->buffer[offset] != '[') && (offset < i); offset++);
 	offset++;
 	offset_mem = offset;
@@ -477,17 +511,20 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 		j++;
 		offset++;
 	}
-	
+	free(buffer);
+	free(address);
+	free(retdata->buffer);
 	free(retdata);
-	curl_slist_free_all(headerlist);
 	
 	return retTab;
 }
 
+/* NOTE: the caller needs to free the returned buffer */
 char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	int i, j, offset, counter, offset_mem;
 	char * retbuffer;
-	char address[1024];
+	size_t address_len;
+	char * address;
 	CURLcode res;
 	struct buffered_char * retdata;
 	CURL * curl = connstruct->curlh;
@@ -496,12 +533,18 @@ char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	if(!query)
 		return;
 	
-	sprintf(address, "%s/solr/%s", addr, query);
+#define RIAK_SEARCH_URL "%s/solr/%s"
+	address_len = strlen(RIAK_SEARCH_URL) + strlen(addr)+ strlen(query) + 1;
+	address = malloc(address_len*sizeof(char));
+	snprintf(address, address_len, RIAK_SEARCH_URL, addr, query);
 	
 	retdata = malloc(sizeof(struct buffered_char));
 	retbuffer = malloc(4096*sizeof(char));
 	retdata->buffer = retbuffer;
 	retdata->pointer = 0;
+	retdata->capacity = 4096;
+	retbuffer = malloc(retdata->capacity*sizeof(char));
+	retdata->buffer = retbuffer;
 	
 	curl_easy_setopt(curl, CURLOPT_URL, address);
 	curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
@@ -512,6 +555,14 @@ char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	
 	retdata->buffer[retdata->pointer] = '\0';
 	
+	free(address);
+	/*
+	 * we free retdata, but not the buffer that it points to,
+	 * that is returned to the caller, who is responsible for
+	 * freeing the allocated memory
+	 */
+	free(retdata);
+
 	return retbuffer;
 }
 
