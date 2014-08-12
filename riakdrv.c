@@ -76,7 +76,7 @@ void riak_copy_error(RIAK_CONN * connstruct, RpbErrorResp * errorResp) {
 	free(tmp);
 }
 
-RIAK_CONN * riak_init(char * hostname, int pb_port, int curl_port, RIAK_CONN * connstruct) {
+RIAK_CONN * riak_init(const char * hostname, int pb_port, int curl_port, RIAK_CONN * connstruct) {
 	int sockfd;
 	struct sockaddr_in serv_addr;
 	struct hostent *server;
@@ -331,7 +331,7 @@ size_t writefunc(void *ptr, size_t size, size_t nmemb, void *userdata) {
 	return needed;
 }
 
-int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data) {
+int riak_put(RIAK_CONN * connstruct, const char * bucket, const char * key, const char * data) {
 	RpbPutReq putReq;
 	RpbContent content;
 	RpbPutResp * putResp;
@@ -343,11 +343,11 @@ int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data) {
 	rpb_put_req__init(&putReq);
 	rpb_content__init(&content);
 
-	putReq.bucket.data = bucket;
+	putReq.bucket.data = (char*)bucket;
 	putReq.bucket.len = strlen(bucket);
-	putReq.key.data = key;
+	putReq.key.data = (char*)key;
 	putReq.key.len = strlen(key);
-	content.value.data = data;
+	content.value.data = (char*)data;
 	content.value.len = strlen(data);
 	content.links = NULL;
 	content.usermeta = NULL;
@@ -391,8 +391,7 @@ int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data) {
 	return 0;
 }
 
-void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_object * elem) {
-	int i;
+void riak_put_json(RIAK_CONN * connstruct, const char * bucket, const char * key, json_object * elem) {
 	size_t address_len;
 	char *address;
 	CURLcode res;
@@ -424,6 +423,9 @@ void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_objec
 	curl_easy_setopt(curl, CURLOPT_INFILESIZE, strlen(data.buffer));
 	
 	res = curl_easy_perform(curl);
+	if (CURLE_OK == res) {
+		// call failed
+	}
 	
 	curl_slist_free_all(headerlist);
 	free(address);
@@ -431,7 +433,7 @@ void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_objec
 
 
 /* NOTE: caller needs to free the data returned from this function as well */
-json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statement, int *ret_len) {
+json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, const char * mapred_statement, int *ret_len) {
 	int i, j, offset, counter, offset_mem;
 	size_t address_len;
 	char * buffer;
@@ -445,7 +447,7 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 	char * addr = connstruct->addr;
 	
 	if((mapred_statement == NULL)||(ret_len == NULL))
-		return;
+		return NULL;
 	
 #define MAPRED_FRAGMENT "/mapred"
 	address_len  = strlen(addr) + strlen(MAPRED_FRAGMENT) + 1;
@@ -468,50 +470,55 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
 	
 	res = curl_easy_perform(curl);
-	// not entirely sure why we need this, but okay
-	curl_slist_free_all(headerlist);
-	retdata->buffer[retdata->pointer] = '\0';
+	if (CURLE_OK == res) {
+		// not entirely sure why we need this, but okay
+		curl_slist_free_all(headerlist);
+		retdata->buffer[retdata->pointer] = '\0';
 
-	i = strlen(retdata->buffer);
-	/* at worst, buffer needs to be large enough to hold all of retdata->buffer */
-	buffer = malloc((i+1)*sizeof(char));
+		i = strlen(retdata->buffer);
+		/* at worst, buffer needs to be large enough to hold all of retdata->buffer */
+		buffer = malloc((i+1)*sizeof(char));
 
-	for(offset = 0; (retdata->buffer[offset] != '[') && (offset < i); offset++);
-	offset++;
-	offset_mem = offset;
-	*ret_len = 0;
-	while(offset<i) {
-		endp = retdata->buffer+offset;
-		counter = 0;
-		do {
-			if(*endp == '{') counter++;
-			if(*endp == '}') counter--;
-			endp++;
-			offset++;
-		} while((counter > 0)||((*endp != ',')&&(*endp != ']')));
+		for(offset = 0; (retdata->buffer[offset] != '[') && (offset < i); offset++);
 		offset++;
-		(*ret_len)++;
-	}
-	offset = offset_mem;
-	retTab = calloc(*ret_len, sizeof(json_object*));
-	j=0;
-	while(offset<i) {
-		startp = retdata->buffer+offset;
-		endp = startp;
-		counter = 0;
-		do {
-			if(*endp == '{') counter++;
-			if(*endp == '}') counter--;
-			endp++;
+		offset_mem = offset;
+		*ret_len = 0;
+		while(offset<i) {
+			endp = retdata->buffer+offset;
+			counter = 0;
+			do {
+				if(*endp == '{') counter++;
+				if(*endp == '}') counter--;
+				endp++;
+				offset++;
+			} while((counter > 0)||((*endp != ',')&&(*endp != ']')));
 			offset++;
-		} while((counter > 0)||((*endp != ',')&&(*endp != ']')));
-		strncpy(buffer, startp, endp-startp);
-		buffer[endp-startp] = '\0';
-		retTab[j] = json_tokener_parse(buffer);
-		j++;
-		offset++;
-	}
-	free(buffer);
+			(*ret_len)++;
+		}
+		offset = offset_mem;
+		retTab = calloc(*ret_len, sizeof(json_object*));
+		j=0;
+		while(offset<i) {
+			startp = retdata->buffer+offset;
+			endp = startp;
+			counter = 0;
+			do {
+				if(*endp == '{') counter++;
+				if(*endp == '}') counter--;
+				endp++;
+				offset++;
+			} while((counter > 0)||((*endp != ',')&&(*endp != ']')));
+			strncpy(buffer, startp, endp-startp);
+			buffer[endp-startp] = '\0';
+			retTab[j] = json_tokener_parse(buffer);
+			j++;
+			offset++;
+		}
+ 		free(buffer);
+ 	} else {
+		// curl call failed
+		retTab = NULL;
+  	}
 	free(address);
 	free(retdata->buffer);
 	free(retdata);
@@ -520,8 +527,7 @@ json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statem
 }
 
 /* NOTE: the caller needs to free the returned buffer */
-char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
-	int i, j, offset, counter, offset_mem;
+char * riak_get_raw_rs(RIAK_CONN * connstruct, const char * query) {
 	char * retbuffer;
 	size_t address_len;
 	char * address;
@@ -531,7 +537,7 @@ char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	char * addr = connstruct->addr;
 	
 	if(!query)
-		return;
+		return NULL;
 	
 #define RIAK_SEARCH_URL "%s/solr/%s"
 	address_len = strlen(RIAK_SEARCH_URL) + strlen(addr)+ strlen(query) + 1;
@@ -552,9 +558,13 @@ char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query) {
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
 	
 	res = curl_easy_perform(curl);
-	
-	retdata->buffer[retdata->pointer] = '\0';
-	
+	if (CURLE_OK != res) {
+		// free the buffer eagerly
+		free(retdata->buffer);
+		retdata->buffer = NULL;
+	} else {
+		retdata->buffer[retdata->pointer] = '\0';
+	}
 	free(address);
 	/*
 	 * we free retdata, but not the buffer that it points to,

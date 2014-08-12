@@ -82,7 +82,7 @@ typedef struct {
  *
  * @return handle to Riak connection; if connstruct != NULL, then connstruct is returned; returns NULL on error
  */
-RIAK_CONN * riak_init(char * hostname, int pb_port, int curl_port, RIAK_CONN * connstruct);
+RIAK_CONN * riak_init(const char * hostname, int pb_port, int curl_port, RIAK_CONN * connstruct);
 
 /** \fn int riak_exec_op(RIAK_CONN * connstruct, RIAK_OP * command, RIAK_OP * result)
  * 	\brief Executes Riak operation via Protocol Buffers socket and receives response.
@@ -134,12 +134,12 @@ char ** riak_list_buckets(RIAK_CONN * connstruct, int * n_buckets);
  *  @param elem JSON structure which should be inserted
  */
 
-int riak_put(RIAK_CONN * connstruct, char * bucket, char * key, char * data);
+int riak_put(RIAK_CONN * connstruct, const char * bucket, const char * key, const char * data);
 
-void riak_put_json(RIAK_CONN * connstruct, char * bucket, char * key, json_object * elem);
+void riak_put_json(RIAK_CONN * connstruct, const char * bucket, const char * key, json_object * elem);
 
-json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, char * mapred_statement, int *ret_len);
-char * riak_get_raw_rs(RIAK_CONN * connstruct, char * query);
+json_object ** riak_get_json_mapred(RIAK_CONN * connstruct, const char * mapred_statement, int *ret_len);
+char * riak_get_raw_rs(RIAK_CONN * connstruct, const char * query);
 
 /** \fn void riak_close(RIAK_CONN * connstruct)
  *  \brief Closes connection to Riak.
